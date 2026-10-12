@@ -45,12 +45,12 @@ jobs:
           set -euo pipefail
           url=$(curl -fsSL -H "authorization: Bearer ${{ github.token }}" \
             https://api.github.com/repos/blacktop/ipsw/releases/latest \
-            | jq -r '[.assets[].browser_download_url | select(test("linux";"i")) | select(test("amd64|x86_64";"i")) | select(endswith("tar.gz"))][0]')
+            | jq -r '[.assets[] | select(.name | startswith("ipsw_")) | select(.name | contains("_linux_x86_64")) | select(.name | endswith(".deb")) | .browser_download_url][0]')
+          [ -n "$url" ] || { echo "no matching release asset"; exit 1; }
           echo "$url"
-          curl -fsSL "$url" | tar -xz -C "$RUNNER_TEMP"
-          bin=$(find "$RUNNER_TEMP" -type f -name ipsw | head -n1)
-          chmod +x "$bin"
-          echo "$(dirname "$bin")" >> "$GITHUB_PATH"
+          curl -fsSL "$url" -o ipsw.deb
+          sudo apt-get install -y ./ipsw.deb
+          ipsw version
 
       - if: steps.cache.outputs.cache-hit != 'true'
         name: download
