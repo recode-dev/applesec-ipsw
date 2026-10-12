@@ -1,0 +1,75 @@
+name: sptm
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: product type, e.g. iPhone14,5
+        required: true
+        default: iPhone14,5
+        type: string
+      build:
+        description: iOS build, e.g. 24A437
+        required: true
+        default: 24A437
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sptm-${{ inputs.device }}-${{ inputs.build }}
+  cancel-in-progress: false
+
+jobs:
+  sptm:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - name: cache key
+        id: key
+        run: |
+          echo "key=ipsw-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "name=sptm-txm-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
+        env:
+          DEV: ${{ inputs.device }}
+          BUILD: ${{ inputs.build }}
+
+      - id: cache
+        uses: actions/cache@v5
+        with:
+          path: ipsw-cache
+          key: ${{ steps.key.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: ipsw
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL -H "authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/blacktop/ipsw/releases/latest \
+            | jq -r '[.assets[] | select(.name | startswith("ipsw_")) | select(.name | contains("_linux_x86_64")) | select(.name | endswith(".deb")) | .browser_download_url][0]')
+          [ -n "$url" ] || { echo "no matching release asset"; exit 1; }
+          curl -fsSL "$url" -o ipsw.deb
+          sudo apt-get install -y ./ipsw.deb
+          ipsw version
+
+      - name: extract
+        run: |
+          set -euo pipefail
+          ipsw_file=$(find ipsw-cache -maxdepth 1 -name '*.ipsw' -print -quit)
+          [ -n "$ipsw_file" ] || { echo "no IPSW in cache, run fetch first"; exit 1; }
+          ipsw extract --sptm --lookup -o firmware "$ipsw_file"
+          find firmware -type f
+
+      - name: archive
+        run: |
+          set -euo pipefail
+          tar -czf "${{ steps.key.outputs.name }}.tar.gz" -C firmware .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.key.outputs.name }}
+          path: ${{ steps.key.outputs.name }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
