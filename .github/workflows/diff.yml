@@ -31,12 +31,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
-      - name: keys
+      - name: name
         id: key
-        run: |
-          echo "prev=ipsw-${DEV//,/_}-${FROM}" >> "$GITHUB_OUTPUT"
-          echo "next=ipsw-${DEV//,/_}-${TO}" >> "$GITHUB_OUTPUT"
-          echo "name=diff-${DEV//,/_}-${FROM}-${TO}" >> "$GITHUB_OUTPUT"
+        run: echo "name=diff-${DEV//,/_}-${FROM}-${TO}" >> "$GITHUB_OUTPUT"
         env:
           DEV: ${{ inputs.device }}
           FROM: ${{ inputs.from }}
@@ -48,19 +45,20 @@ jobs:
           tool-cache: true
           swap-storage: false
 
-      - id: prev
-        uses: actions/cache@v5
-        with:
-          path: ipsw-cache
-          key: ${{ steps.key.outputs.prev }}
-          fail-on-cache-miss: true
-
-      - id: next
-        uses: actions/cache@v5
-        with:
-          path: ipsw-cache
-          key: ${{ steps.key.outputs.next }}
-          fail-on-cache-miss: true
+      - name: swap
+        run: |
+          set -euo pipefail
+          swapdir=/mnt
+          df "$swapdir" >/dev/null 2>&1 || swapdir=/
+          avail_g=$(df -P "$swapdir" | awk 'NR==2 {print int($4/1024/1024)}')
+          size_g=$(( avail_g - 10 ))
+          [ "$size_g" -gt 28 ] && size_g=28
+          [ "$size_g" -lt 8 ] && { echo "only ${avail_g}G free, skipping swap"; exit 0; }
+          sudo fallocate -l "${size_g}G" "$swapdir/swapfile" || sudo dd if=/dev/zero of="$swapdir/swapfile" bs=1M count=$(( size_g * 1024 ))
+          sudo chmod 600 "$swapdir/swapfile"
+          sudo mkswap "$swapdir/swapfile" >/dev/null
+          sudo swapon "$swapdir/swapfile"
+          free -h
 
       - name: ipsw
         run: |
@@ -88,31 +86,32 @@ jobs:
           sudo install -m 0755 "$src/build/apfs-fuse" /usr/local/bin/apfs-fuse
           command -v apfs-fuse
 
-      - name: swap
-        run: |
-          set -euo pipefail
-          swapdir=/mnt
-          df "$swapdir" >/dev/null 2>&1 || swapdir=/
-          avail_g=$(df -P "$swapdir" | awk 'NR==2 {print int($4/1024/1024)}')
-          size_g=$(( avail_g - 10 ))
-          [ "$size_g" -gt 28 ] && size_g=28
-          [ "$size_g" -lt 8 ] && { echo "only ${avail_g}G free, skipping swap"; exit 0; }
-          sudo fallocate -l "${size_g}G" "$swapdir/swapfile" || sudo dd if=/dev/zero of="$swapdir/swapfile" bs=1M count=$(( size_g * 1024 ))
-          sudo chmod 600 "$swapdir/swapfile"
-          sudo mkswap "$swapdir/swapfile" >/dev/null
-          sudo swapon "$swapdir/swapfile"
-          free -h
-
       - name: symbolicator
         run: git clone --quiet --depth 1 https://github.com/blacktop/symbolicator.git "$RUNNER_TEMP/symbolicator"
+
+      - name: download
+        run: |
+          set -euo pipefail
+          mkdir -p ipsw
+          for b in "${{ inputs.from }}" "${{ inputs.to }}"; do
+            ipsw download ipsw \
+              --device "${{ inputs.device }}" \
+              --build "$b" \
+              --confirm \
+              --enable-node-selection \
+              --output ipsw \
+              --verbose
+          done
+          ls -l ipsw
+          df -h /
 
       - name: diff
         run: |
           set -euo pipefail
-          prev=$(find ipsw-cache -maxdepth 1 -name "*${{ inputs.from }}*.ipsw" -print -quit)
-          next=$(find ipsw-cache -maxdepth 1 -name "*${{ inputs.to }}*.ipsw" -print -quit)
-          [ -n "$prev" ] || { echo "no IPSW for ${{ inputs.from }} in cache, run fetch first"; exit 1; }
-          [ -n "$next" ] || { echo "no IPSW for ${{ inputs.to }} in cache, run fetch first"; exit 1; }
+          prev=$(find ipsw -maxdepth 1 -name "*${{ inputs.from }}*.ipsw" -print -quit)
+          next=$(find ipsw -maxdepth 1 -name "*${{ inputs.to }}*.ipsw" -print -quit)
+          [ -n "$prev" ] || { echo "no IPSW for ${{ inputs.from }}"; exit 1; }
+          [ -n "$next" ] || { echo "no IPSW for ${{ inputs.to }}"; exit 1; }
           echo "$prev"
           echo "$next"
           mkdir -p diff
