@@ -53,18 +53,30 @@ jobs:
           sudo apt-get install -y ./ipsw.deb
           ipsw version
 
+      - name: symbolicator
+        run: git clone --quiet --depth 1 https://github.com/blacktop/symbolicator.git "$RUNNER_TEMP/symbolicator"
+
       - name: extract
         run: |
           set -euo pipefail
           ipsw_file=$(find ipsw-cache -maxdepth 1 -name '*.ipsw' -print -quit)
           [ -n "$ipsw_file" ] || { echo "no IPSW in cache, run fetch first"; exit 1; }
-          ipsw extract --kernel --lookup --device "${{ inputs.device }}" -o kernel "$ipsw_file"
-          find kernel -type f
+          ipsw extract --kernel --lookup --device "${{ inputs.device }}" -o out/kernel "$ipsw_file"
+          find out/kernel -type f
 
-      - name: archive
+      - name: symbolicate
         run: |
           set -euo pipefail
-          tar -czf "${{ steps.key.outputs.name }}.tar.gz" -C kernel .
+          kc=$(find out/kernel -type f -name 'kernelcache.release.*' -print -quit)
+          [ -n "$kc" ] || { echo "no kernelcache in out/kernel"; find out/kernel -type f; exit 1; }
+          sigs="$RUNNER_TEMP/symbolicator/kernel"
+          mkdir -p out/syms
+          ipsw kernel symbolicate --signatures "$sigs" --json -o out/syms "$kc"
+          ipsw kernel symbolicate --signatures "$sigs" --flat -o out/syms "$kc"
+          find out/syms -type f
+
+      - name: archive
+        run: tar -czf "${{ steps.key.outputs.name }}.tar.gz" -C out .
 
       - uses: actions/upload-artifact@v7
         with:
