@@ -4,12 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       device:
-        description: iPhone14,5
+        description: product type, e.g. iPhone14,5
         required: true
+        default: iPhone14,5
         type: string
       build:
-        description: 24A437
+        description: iOS build, e.g. 24A437
         required: true
+        default: 24A437
         type: string
 
 permissions:
