@@ -30,7 +30,7 @@ jobs:
         id: key
         run: |
           echo "key=ipsw-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
-          echo "name=sptm-txm-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "name=sptm-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
         env:
           DEV: ${{ inputs.device }}
           BUILD: ${{ inputs.build }}
