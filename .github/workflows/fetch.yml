@@ -25,8 +25,9 @@ jobs:
   fetch:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
-     steps:
-      - id: key
+    steps:
+      - name: cache key
+        id: key
         run: echo "key=ipsw-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
         env:
           DEV: ${{ inputs.device }}
@@ -36,7 +37,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ipsw-cache
-          key: ${{ steps.key.outputs.key }}   
+          key: ${{ steps.key.outputs.key }}
 
       - if: steps.cache.outputs.cache-hit != 'true'
         name: ipsw
