@@ -1,0 +1,58 @@
+name: fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: iPhone14,5
+        required: true
+        type: string
+      build:
+        description: 24A437
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fetch-${{ inputs.device }}-${{ inputs.build }}
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - id: cache
+        uses: actions/cache@v5
+        with:
+          path: ipsw-cache
+          key: ipsw-${{ inputs.device }}-${{ inputs.build }}
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: ipsw
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL -H "authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/blacktop/ipsw/releases/latest \
+            | jq -r '[.assets[].browser_download_url | select(test("linux";"i")) | select(test("amd64|x86_64";"i")) | select(endswith("tar.gz"))][0]')
+          echo "$url"
+          curl -fsSL "$url" | tar -xz -C "$RUNNER_TEMP"
+          bin=$(find "$RUNNER_TEMP" -type f -name ipsw | head -n1)
+          chmod +x "$bin"
+          echo "$(dirname "$bin")" >> "$GITHUB_PATH"
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: download
+        run: |
+          set -euo pipefail
+          mkdir -p ipsw-cache
+          ipsw download ipsw \
+            --device "${{ inputs.device }}" \
+            --build "${{ inputs.build }}" \
+            --confirm \
+            --enable-node-selection \
+            --output ipsw-cache \
+            --verbose
+          ls -l ipsw-cache
