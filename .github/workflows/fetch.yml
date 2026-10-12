@@ -24,23 +24,24 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-26.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
-      - name: cache key
+      - name: names
         id: key
-        run: echo "key=ipsw-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "kernel=kernel-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "sptm=sptm-${DEV//,/_}-${BUILD}" >> "$GITHUB_OUTPUT"
         env:
           DEV: ${{ inputs.device }}
           BUILD: ${{ inputs.build }}
 
-      - id: cache
-        uses: actions/cache@v5
+      - name: free disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:
-          path: ipsw-cache
-          key: ${{ steps.key.outputs.key }}
+          tool-cache: true
+          swap-storage: false
 
-      - if: steps.cache.outputs.cache-hit != 'true'
-        name: ipsw
+      - name: ipsw
         run: |
           set -euo pipefail
           url=$(curl -fsSL -H "authorization: Bearer ${{ github.token }}" \
@@ -52,16 +53,63 @@ jobs:
           sudo apt-get install -y ./ipsw.deb
           ipsw version
 
-      - if: steps.cache.outputs.cache-hit != 'true'
-        name: download
+      - name: symbolicator
+        run: git clone --quiet --depth 1 https://github.com/blacktop/symbolicator.git "$RUNNER_TEMP/symbolicator"
+
+      - name: download
         run: |
           set -euo pipefail
-          mkdir -p ipsw-cache
+          mkdir -p ipsw
           ipsw download ipsw \
             --device "${{ inputs.device }}" \
             --build "${{ inputs.build }}" \
             --confirm \
             --enable-node-selection \
-            --output ipsw-cache \
+            --output ipsw \
             --verbose
-          ls -l ipsw-cache
+          ls -l ipsw
+          df -h /
+
+      - name: kernel
+        run: |
+          set -euo pipefail
+          ipsw_file=$(find ipsw -maxdepth 1 -name '*.ipsw' -print -quit)
+          [ -n "$ipsw_file" ] || { echo "no IPSW downloaded"; exit 1; }
+          ipsw extract --kernel --lookup --device "${{ inputs.device }}" -o kout/kernel "$ipsw_file"
+          kc=$(find kout/kernel -type f -name 'kernelcache.release.*' -print -quit)
+          [ -n "$kc" ] || { echo "no kernelcache in kout/kernel"; find kout/kernel -type f; exit 1; }
+          mkdir -p kout/syms
+          sigs="$RUNNER_TEMP/symbolicator/kernel"
+          ipsw kernel symbolicate --signatures "$sigs" --json -o kout/syms "$kc"
+          ipsw kernel symbolicate --signatures "$sigs" --flat -o kout/syms "$kc"
+          find kout -type f
+
+      - name: sptm
+        run: |
+          set -euo pipefail
+          ipsw_file=$(find ipsw -maxdepth 1 -name '*.ipsw' -print -quit)
+          [ -n "$ipsw_file" ] || { echo "no IPSW downloaded"; exit 1; }
+          ipsw extract --sptm --lookup -o fout/firmware "$ipsw_file"
+          find fout -type f
+
+      - name: archive kernel
+        run: tar -czf "${{ steps.key.outputs.kernel }}.tar.gz" -C kout .
+
+      - name: archive sptm
+        run: tar -czf "${{ steps.key.outputs.sptm }}.tar.gz" -C fout .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.key.outputs.kernel }}
+          path: ${{ steps.key.outputs.kernel }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.key.outputs.sptm }}
+          path: ${{ steps.key.outputs.sptm }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
