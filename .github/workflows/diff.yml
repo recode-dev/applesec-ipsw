@@ -1,0 +1,142 @@
+name: diff
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: product type, e.g. iPhone14,5
+        required: true
+        default: iPhone14,5
+        type: string
+      from:
+        description: previous build, e.g. 23G83
+        required: true
+        default: 23G83
+        type: string
+      to:
+        description: next build, e.g. 24A437
+        required: true
+        default: 24A437
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diff-${{ inputs.device }}-${{ inputs.from }}-${{ inputs.to }}
+  cancel-in-progress: false
+
+jobs:
+  diff:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    steps:
+      - name: keys
+        id: key
+        run: |
+          echo "prev=ipsw-${DEV//,/_}-${FROM}" >> "$GITHUB_OUTPUT"
+          echo "next=ipsw-${DEV//,/_}-${TO}" >> "$GITHUB_OUTPUT"
+          echo "name=diff-${DEV//,/_}-${FROM}-${TO}" >> "$GITHUB_OUTPUT"
+        env:
+          DEV: ${{ inputs.device }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+
+      - name: free disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+          swap-storage: false
+
+      - id: prev
+        uses: actions/cache@v5
+        with:
+          path: ipsw-cache
+          key: ${{ steps.key.outputs.prev }}
+          fail-on-cache-miss: true
+
+      - id: next
+        uses: actions/cache@v5
+        with:
+          path: ipsw-cache
+          key: ${{ steps.key.outputs.next }}
+          fail-on-cache-miss: true
+
+      - name: ipsw
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL -H "authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/blacktop/ipsw/releases/latest \
+            | jq -r '[.assets[] | select(.name | startswith("ipsw_")) | select(.name | contains("_linux_x86_64")) | select(.name | endswith(".deb")) | .browser_download_url][0]')
+          [ -n "$url" ] || { echo "no matching release asset"; exit 1; }
+          curl -fsSL "$url" -o ipsw.deb
+          sudo apt-get install -y ./ipsw.deb
+          ipsw version
+
+      - name: apfs-fuse
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fuse3 libfuse3-dev libbz2-dev libattr1-dev zlib1g-dev cmake g++ git
+          src="$RUNNER_TEMP/apfs-fuse"
+          git clone --quiet https://github.com/sgan81/apfs-fuse.git "$src"
+          git -C "$src" checkout --quiet 66b86bd525e8cb90f9012543be89b1f092b75cf3
+          git -C "$src" submodule update --init --recursive --quiet
+          cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$src/build" --parallel "$(nproc)"
+          sudo install -m 0755 "$src/build/apfs-fuse" /usr/local/bin/apfs-fuse
+          command -v apfs-fuse
+
+      - name: swap
+        run: |
+          set -euo pipefail
+          swapdir=/mnt
+          df "$swapdir" >/dev/null 2>&1 || swapdir=/
+          avail_g=$(df -P "$swapdir" | awk 'NR==2 {print int($4/1024/1024)}')
+          size_g=$(( avail_g - 10 ))
+          [ "$size_g" -gt 28 ] && size_g=28
+          [ "$size_g" -lt 8 ] && { echo "only ${avail_g}G free, skipping swap"; exit 0; }
+          sudo fallocate -l "${size_g}G" "$swapdir/swapfile" || sudo dd if=/dev/zero of="$swapdir/swapfile" bs=1M count=$(( size_g * 1024 ))
+          sudo chmod 600 "$swapdir/swapfile"
+          sudo mkswap "$swapdir/swapfile" >/dev/null
+          sudo swapon "$swapdir/swapfile"
+          free -h
+
+      - name: symbolicator
+        run: git clone --quiet --depth 1 https://github.com/blacktop/symbolicator.git "$RUNNER_TEMP/symbolicator"
+
+      - name: diff
+        run: |
+          set -euo pipefail
+          prev=$(find ipsw-cache -maxdepth 1 -name "*${{ inputs.from }}*.ipsw" -print -quit)
+          next=$(find ipsw-cache -maxdepth 1 -name "*${{ inputs.to }}*.ipsw" -print -quit)
+          [ -n "$prev" ] || { echo "no IPSW for ${{ inputs.from }} in cache, run fetch first"; exit 1; }
+          [ -n "$next" ] || { echo "no IPSW for ${{ inputs.to }} in cache, run fetch first"; exit 1; }
+          echo "$prev"
+          echo "$next"
+          mkdir -p diff
+          ipsw diff --output diff \
+            --markdown \
+            --fw \
+            --launchd \
+            --feat \
+            --strs \
+            --ent \
+            --files \
+            --starts \
+            --signatures "$RUNNER_TEMP/symbolicator/kernel" \
+            --block-list "__TEXT.__info_plist" \
+            --block-list "__AUTH_CONST.__auth_ptr" \
+            "$prev" "$next"
+
+      - name: archive
+        run: tar -czf "${{ steps.key.outputs.name }}.tar.gz" -C diff .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.key.outputs.name }}
+          path: ${{ steps.key.outputs.name }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
